@@ -22,6 +22,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,9 @@ MIN_DAYS = 2                             # campaigns must be running for at leas
 
 SESSION_FILE = Path("session.json")      # saved auth state so you only log in once
 STATE_FILE   = Path("optimizer_state.json")  # tracks per-campaign optimisation history
+
+# Detect Claude Code on the web (headless, no display available)
+IS_REMOTE = os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true"
 
 # ── Genre → Interest candidates ───────────────────────────────────────────────
 # Ordered from most specific/targeted to broadest. The optimizer works through
@@ -154,7 +158,10 @@ def log_action(action: str, reason: str) -> None:
 # ── Browser / session management ──────────────────────────────────────────────
 
 async def launch_browser(pw) -> tuple[Browser, BrowserContext]:
-    browser = await pw.chromium.launch(headless=False, slow_mo=150)
+    # Remote (web) environments have no display — run headless.
+    # Locally, run headed so the manual-login window is visible.
+    headless = IS_REMOTE
+    browser = await pw.chromium.launch(headless=headless, slow_mo=150)
     if SESSION_FILE.exists():
         log("Loading saved session from session.json …")
         context = await browser.new_context(storage_state=str(SESSION_FILE))
@@ -165,11 +172,24 @@ async def launch_browser(pw) -> tuple[Browser, BrowserContext]:
 
 
 async def ensure_logged_in(page: Page) -> None:
-    """Navigate to the dashboard; if redirected to a login page, wait for the user."""
+    """Navigate to the dashboard; if redirected to a login page, wait for the user.
+
+    On the web (IS_REMOTE=True) there is no display, so manual login is impossible.
+    In that case the script requires a pre-existing session.json.  Generate one by
+    running the script locally first, then upload session.json as a project secret
+    or commit it to a private branch.
+    """
     await page.goto(SONGFLY_URL, wait_until="networkidle")
 
     is_auth_page = any(kw in page.url for kw in ("login", "signin", "auth", "sign-in"))
     if is_auth_page:
+        if IS_REMOTE:
+            raise RuntimeError(
+                "Running headlessly on the web but no session.json was found.\n"
+                "  Fix: run the script locally once to generate session.json, then\n"
+                "  upload it to your project (e.g. as a Claude Code project secret)."
+            )
+
         print("\n" + "=" * 60)
         print("  MANUAL LOGIN REQUIRED")
         print("  Log in to Songfly in the browser window that just opened.")
